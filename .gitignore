@@ -1,0 +1,9 @@
+data/
+checkpoints/
+wandb/
+__pycache__/
+*.tar
+*.pt
+*.ckpt
+.env
+
