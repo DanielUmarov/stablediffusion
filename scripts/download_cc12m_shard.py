@@ -8,45 +8,74 @@ distributed in WebDataset (.tar) format.
 
 Why this script exists
 ----------------------
-CC12M is too large to download in full. Instead, it is hosted as many
-independent tar shards, each containing thousands of image–caption pairs.
-This script downloads ONE shard to:
+CC12M is too large to download in full (~12M samples). Instead, it is hosted
+as many independent tar shards, each containing ~10k image–caption pairs.
 
-- validate the data pipeline
-- enable early preprocessing and sanity checks
+This script downloads ONE shard at a time in order to:
+- validate the preprocessing + latent pipeline incrementally
 - avoid unnecessary storage and bandwidth usage
+- mirror how diffusion models are trained in practice (shard-based streaming)
 
-This approach mirrors how large-scale diffusion models (e.g. Stable Diffusion)
-are trained in practice: streaming or shard-based datasets rather than
-monolithic archives.
+Design philosophy
+-----------------
+- Shards are the unit of scale, not individual images
+- Downloads must be resumable and cache-aware
+- This script should be safe to re-run (idempotent via HF cache)
+
+This script does *not* perform extraction or preprocessing.
+It only retrieves raw data.
 """
 
 from pathlib import Path
+import argparse
 from huggingface_hub import hf_hub_download
 
 # Hugging Face dataset repository containing CC12M in WebDataset format
 REPO_ID = "laion/conceptual-captions-12m-webdataset"
 
-# Shard filename inside the dataset repository.
-# Each shard is ~1GB and contains ~10k image–caption pairs.
-FILENAME = "data/00000.tar"
+def download_shard(shard_id: str, out_dir: Path) -> Path:
+    """
+    Download a single CC12M tar shard by shard ID.
 
-# Local directory where the shard will be stored
-OUT_DIR = Path("data/raw/cc12m_shards")
-OUT_DIR.mkdir(parents=True, exist_ok=True)
+    Parameters
+    ----------
+    shard_id : str
+        Five-digit shard identifier (e.g. "00000", "00042").
+    out_dir : Path
+        Local directory where shards are stored.
 
-# Download the shard from Hugging Face Hub.
-# hf_hub_download handles:
-# - resumable downloads
-# - local caching
-# - correct versioning
-#
-# The returned path points to the downloaded tar file on disk.
-path = hf_hub_download(
-    repo_id=REPO_ID,
-    filename=FILENAME,
-    repo_type="dataset",
-    local_dir=str(OUT_DIR),
-)
+    Returns
+    -------
+    Path
+        Path to the downloaded tar file on disk.
+    """
+    shard_id = shard_id.zfill(5)
+    filename = f"data/{shard_id}.tar"
 
-print("Downloaded CC12M shard to:", path)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # hf_hub_download handles:
+    # - resumable downloads
+    # - local caching
+    # - versioning
+    path = hf_hub_download(
+        repo_id=REPO_ID,
+        filename=filename,
+        repo_type="dataset",
+        local_dir=str(out_dir),
+    )
+
+    return Path(path)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Download one CC12M shard")
+    parser.add_argument("--shard", required=True, help="Shard ID (e.g. 00000)")
+    parser.add_argument(
+        "--out_dir",
+        default="data/raw/cc12m_shards",
+        help="Local directory for downloaded shards"
+    )
+    args = parser.parse_args()
+
+    shard_path = download_shard(args.shard, Path(args.out_dir))
+    print("Downloaded CC12M shard to:", shard_path)

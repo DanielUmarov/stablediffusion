@@ -23,6 +23,9 @@ Notes:
 - Supports --resume by reading manifest.jsonl and skipping already-encoded paths.
 """
 
+# Diagnostic utility: not used in training
+
+
 import argparse
 import json
 import re

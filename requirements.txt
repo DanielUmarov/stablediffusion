@@ -1,0 +1,23 @@
+# -----------------------------
+# Core ML / Diffusion stack
+# -----------------------------
+torch
+diffusers>=0.20.0
+transformers
+accelerate
+safetensors
+
+# -----------------------------
+# Data processing & utilities
+# -----------------------------
+numpy
+Pillow
+tqdm
+huggingface_hub
+
+# -----------------------------
+# (Optional but commonly present)
+# Uncomment if needed later
+# -----------------------------
+# scipy
+# matplotlib

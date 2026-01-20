@@ -1,4 +1,6 @@
-data/
+data/raw/
+data/latents/
+data/processed/*.pt
 checkpoints/
 wandb/
 __pycache__/
@@ -6,4 +8,6 @@ __pycache__/
 *.pt
 *.ckpt
 .env
+*.jpg
+*.png
 
