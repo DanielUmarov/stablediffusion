@@ -12,3 +12,7 @@ __pycache__/
 *.png
 state/
 
+
+# big/local files
+AWSCLIV2.pkg
+assets/*.gif
