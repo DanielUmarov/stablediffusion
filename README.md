@@ -75,7 +75,7 @@ The animation shows:
 This visualization is intended to build **physical and geometric intuition**, not just empirical understanding.
 
 <p align="center">
-  <img src="assets/swissroll_sde.gif" width="600"/>
+  <img src="assets/swissroll_sde_hq.gif" width="600"/>
 </p>
 
 <p align="center">
