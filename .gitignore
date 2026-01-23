@@ -13,7 +13,8 @@ __pycache__/
 state/
 assets/*.gif
 !assets/swissroll_sde_hq.gif
-
+logs/
 
 # big/local files
 AWSCLIV2.pkg
+logs/
