@@ -11,6 +11,8 @@ __pycache__/
 *.jpg
 *.png
 state/
+assets/*.gif
+!assets/swissroll_sde_hq.gif
 
 
 # big/local files
