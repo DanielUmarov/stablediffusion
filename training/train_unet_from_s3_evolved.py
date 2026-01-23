@@ -74,6 +74,7 @@ def s3_find_latest_checkpoint(s3_ckpt_prefix: str):
 
     latest_key = None
     best_step = -1
+
     # 1) prefer unet_latest.pt
     for k in keys:
         if k.endswith("/unet_latest.pt") or Path(k).name == "unet_latest.pt":
@@ -178,13 +179,15 @@ class ShardCache:
 # -----------------------------
 # Training
 # -----------------------------
-def save_checkpoint(save_path: Path, model, optimizer, step: int, extra: dict | None = None):
+def save_checkpoint(save_path: Path, model, optimizer, step: int, scaler=None, extra: dict | None = None):
     save_path.parent.mkdir(parents=True, exist_ok=True)
     ckpt = {
         "step": step,
         "model": model.state_dict(),
         "optimizer": optimizer.state_dict(),
     }
+    if scaler is not None:
+        ckpt["scaler"] = scaler.state_dict()
     if extra:
         ckpt.update(extra)
     torch.save(ckpt, save_path)
@@ -219,6 +222,11 @@ def main():
     ap.add_argument("--T", type=int, default=1000, help="diffusion timesteps")
     ap.add_argument("--print_every", type=int, default=10)
 
+    # perf / stability
+    ap.add_argument("--amp", action="store_true", help="Use mixed precision (recommended for CUDA).")
+    ap.add_argument("--grad_clip", type=float, default=0.0, help="0 disables, else clip grad norm.")
+    ap.add_argument("--seed", type=int, default=0, help="0 disables; else set RNG seed.")
+
     # checkpoints
     ap.add_argument("--save_dir", type=str, default="checkpoints/unet")
     ap.add_argument("--save_every", type=int, default=500)
@@ -231,12 +239,30 @@ def main():
 
     # logging
     ap.add_argument("--loss_csv", type=str, default="checkpoints/unet/loss.csv")
+    ap.add_argument("--csv_every", type=int, default=10, help="Write a CSV row every N steps.")
 
     args = ap.parse_args()
 
     device = pick_device()
     print("Device:", device)
-    dtype = torch.float32  # keep float32 for MPS stability
+
+    # dtype for stored latents + schedule math (keep fp32; AMP handles fp16 on CUDA)
+    dtype = torch.float32  # keep float32 for MPS stability + general safety
+
+    # CUDA speed knobs (safe defaults)
+    if device.type == "cuda":
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
+
+    # seeding (optional)
+    if args.seed and args.seed > 0:
+        torch.manual_seed(args.seed)
+        if device.type == "cuda":
+            torch.cuda.manual_seed_all(args.seed)
+
+    use_amp = bool(args.amp and device.type == "cuda")
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
     # ---- list shards in S3 ----
     lat_bucket, lat_prefix = parse_s3_uri(args.s3_latents_prefix)
@@ -270,8 +296,11 @@ def main():
         model.load_state_dict(ckpt["model"])
         if "optimizer" in ckpt:
             optimizer.load_state_dict(ckpt["optimizer"])
+        if "scaler" in ckpt and use_amp:
+            scaler.load_state_dict(ckpt["scaler"])
         start_step = int(ckpt.get("step", 0))
         print("Resumed from local:", ckpt_path, "at step", start_step)
+
     elif args.auto_resume_s3 and args.s3_ckpt_prefix:
         latest = s3_find_latest_checkpoint(args.s3_ckpt_prefix)
         if latest:
@@ -282,6 +311,8 @@ def main():
             model.load_state_dict(ckpt["model"])
             if "optimizer" in ckpt:
                 optimizer.load_state_dict(ckpt["optimizer"])
+            if "scaler" in ckpt and use_amp:
+                scaler.load_state_dict(ckpt["scaler"])
             start_step = int(ckpt.get("step", 0))
             print("Resumed from S3 at step", start_step)
         else:
@@ -303,15 +334,17 @@ def main():
 
         local_shard = cache.ensure(shard_uri)
 
-        ckpt = torch.load(local_shard, map_location="cpu")
-        latents = ckpt["latents"]  # expected: [N,4,H,W]
+        shard_ckpt = torch.load(local_shard, map_location="cpu")
+        latents = shard_ckpt["latents"]  # expected: [N,4,H,W]
         if not isinstance(latents, torch.Tensor):
             latents = torch.tensor(latents)
 
-        # sample batch
+        latents = latents.contiguous()
+
+        # sample batch (index on CPU, then move batch)
         N = latents.shape[0]
         idx = torch.randint(0, N, (args.batch_size,))
-        x0 = latents[idx].to(device=device, dtype=dtype)  # IMPORTANT: use stored latents directly
+        x0 = latents[idx].to(device=device, dtype=dtype, non_blocking=True)  # [B,4,H,W]
 
         # sample timesteps + noise
         t = torch.randint(0, args.T, (args.batch_size,), device=device, dtype=torch.long)
@@ -321,37 +354,49 @@ def main():
         abar_t = abar[t].view(-1, 1, 1, 1)  # [B,1,1,1]
         xt = torch.sqrt(abar_t) * x0 + torch.sqrt(1.0 - abar_t) * eps
 
-        # predict noise
-        pred = model(xt, t)
-        loss = F.mse_loss(pred, eps)
-
         optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        optimizer.step()
+
+        with torch.cuda.amp.autocast(enabled=use_amp):
+            pred = model(xt, t)
+            loss = F.mse_loss(pred, eps)
+
+        scaler.scale(loss).backward()
+
+        if args.grad_clip and args.grad_clip > 0:
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+
+        scaler.step(optimizer)
+        scaler.update()
 
         step += 1
 
-        # logging
+        # logging (print)
         if step % args.print_every == 0:
             dt = time.time() - t0
             t0 = time.time()
             shard_name = Path(parse_s3_uri(shard_uri)[1]).name
-            print(f"step {step:07d} | loss {loss.item():.6f} | shard {shard_name} | {dt:.1f}s")
+            amp_tag = "amp" if use_amp else "fp32"
+            print(f"step {step:07d} | loss {loss.item():.6f} | {amp_tag} | shard {shard_name} | {dt:.1f}s")
 
-        append_loss_csv(loss_csv, {
-            "step": step,
-            "loss": float(loss.item()),
-            "shard": Path(parse_s3_uri(shard_uri)[1]).name,
-            "device": str(device),
-        })
+        # logging (csv) - throttle
+        if args.csv_every > 0 and (step % args.csv_every == 0):
+            append_loss_csv(loss_csv, {
+                "step": step,
+                "loss": float(loss.item()),
+                "shard": Path(parse_s3_uri(shard_uri)[1]).name,
+                "device": str(device),
+                "amp": int(use_amp),
+                "batch_size": int(args.batch_size),
+            })
 
         # checkpointing
         if step % args.save_every == 0 or step == args.steps:
             ckpt_path = save_dir / f"unet_step_{step:07d}.pt"
             latest_path = save_dir / "unet_latest.pt"
 
-            save_checkpoint(ckpt_path, model, optimizer, step, extra={"T": args.T})
-            save_checkpoint(latest_path, model, optimizer, step, extra={"T": args.T})
+            save_checkpoint(ckpt_path, model, optimizer, step, scaler=scaler if use_amp else None, extra={"T": args.T})
+            save_checkpoint(latest_path, model, optimizer, step, scaler=scaler if use_amp else None, extra={"T": args.T})
             print("saved:", ckpt_path)
 
             # upload to S3 if requested
@@ -359,7 +404,8 @@ def main():
                 try:
                     s3_upload(ckpt_path, s3_join(args.s3_ckpt_prefix, ckpt_path.name))
                     s3_upload(latest_path, s3_join(args.s3_ckpt_prefix, latest_path.name))
-                    s3_upload(loss_csv, s3_join(args.s3_ckpt_prefix, loss_csv.name))
+                    if loss_csv.exists():
+                        s3_upload(loss_csv, s3_join(args.s3_ckpt_prefix, loss_csv.name))
                     print("uploaded to:", args.s3_ckpt_prefix)
                 except ClientError as e:
                     print("WARNING: S3 upload failed:", e)
