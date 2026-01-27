@@ -4,12 +4,12 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
-from data.mnist import get_mnist_dataloader
-from diffusion.schedule import DiffusionSchedule
-from diffusion.sampler import sample_ddpm
-from models.unet_mnist import TinyUNetCFG
-from utils.io import save_checkpoint, save_grid
-from utils.seed import set_seed
+from mnist_diffusion.data.mnist import get_mnist_dataloader
+from mnist_diffusion.diffusion.schedule import DiffusionSchedule
+from mnist_diffusion.diffusion.sampler import sample_ddpm
+from mnist_diffusion.models.unet_mnist import TinyUNetCFG
+from mnist_diffusion.utils.io import save_checkpoint, save_grid
+from mnist_diffusion.utils.seed import set_seed
 
 
 def main():

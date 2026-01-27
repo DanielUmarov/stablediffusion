@@ -2,10 +2,10 @@ import argparse
 import torch
 from pathlib import Path
 
-from diffusion.schedule import DiffusionSchedule
-from diffusion.sampler import sample_ddpm
-from models.unet_mnist import TinyUNetCFG
-from utils.io import load_checkpoint, save_grid
+from mnist_diffusion.diffusion.schedule import DiffusionSchedule
+from mnist_diffusion.diffusion.sampler import sample_ddpm
+from mnist_diffusion.models.unet_mnist import TinyUNetCFG
+from mnist_diffusion.utils.io import load_checkpoint, save_grid
 
 
 def main():
