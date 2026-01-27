@@ -18,3 +18,10 @@ logs/
 # big/local files
 AWSCLIV2.pkg
 logs/
+
+#experiments
+DecodeExperiment
+Training_1_22_26
+samples
+
+ 
