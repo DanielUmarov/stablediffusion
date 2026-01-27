@@ -153,37 +153,34 @@ class Diffusion:
         return sqrt_ab_t * x0 + sqrt_omab_t * noise, noise
 
     @torch.no_grad()
-    def p_sample(self, model, x, t):
-        """
-        One reverse step: x_t -> x_{t-1}
-        """
+    def p_sample(self, model, x, t, y):
         b = x.size(0)
         t_batch = torch.full((b,), t, device=self.device, dtype=torch.long)
 
-        eps_pred = model(x, t_batch)
+        eps_pred = model(x, t_batch, y)
 
         beta_t = self.betas[t]
         alpha_t = self.alphas[t]
         ab_t = self.alphas_bar[t]
 
-        # DDPM mean (predict noise)
         coef1 = 1.0 / torch.sqrt(alpha_t)
         coef2 = beta_t / torch.sqrt(1.0 - ab_t)
-
         mean = coef1 * (x - coef2 * eps_pred)
 
         if t == 0:
             return mean
         noise = torch.randn_like(x)
-        var = beta_t
-        return mean + torch.sqrt(var) * noise
+        return mean + torch.sqrt(beta_t) * noise
 
     @torch.no_grad()
-    def sample(self, model, n=16, shape=(1, 28, 28)):
+    def sample(self, model, y, shape=(1, 28, 28)):
+        """
+        y: (B,) labels
+        """
         model.eval()
-        x = torch.randn((n, *shape), device=self.device)
+        x = torch.randn((y.size(0), *shape), device=self.device)
         for t in reversed(range(self.T)):
-            x = self.p_sample(model, x, t)
+            x = self.p_sample(model, x, t, y)
         return x
 
 # ----------------------------
@@ -201,7 +198,7 @@ def main():
     ds = datasets.MNIST(root="./data", train=True, download=True, transform=tfm)
     dl = DataLoader(ds, batch_size=128, shuffle=True, num_workers=2, drop_last=True)
 
-    model = TinyUNet().to(device)
+    model = TinyUNetCond().to(device)
     diff = Diffusion(T=200, device=device)  # 200 steps is faster for MNIST
 
     opt = torch.optim.AdamW(model.parameters(), lr=2e-4)
@@ -209,13 +206,13 @@ def main():
     epochs = 3
     for ep in range(epochs):
         model.train()
-        for i, (x0, _) in enumerate(dl):
+        for i, (x0, y) in enumerate(dl):
             x0 = x0.to(device)
 
             t = torch.randint(0, diff.T, (x0.size(0),), device=device, dtype=torch.long)
             xt, noise = diff.q_sample(x0, t)
 
-            noise_pred = model(xt, t)
+            noise_pred = model(xt, t, y)
             loss = F.mse_loss(noise_pred, noise)
 
             opt.zero_grad(set_to_none=True)
